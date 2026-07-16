@@ -148,6 +148,8 @@ VoxWin.bat                              # без консоли (pythonw)
 
 ## Лицензия
 
+Copyright © 2026 **DebugSage** ([@matvey705](https://github.com/matvey705))
+
 VoxWin распространяется под **GNU GPL v3.0** — см. [LICENSE](LICENSE).
 
 Коротко, что это значит для вас как пользователя и для тех, кто захочет

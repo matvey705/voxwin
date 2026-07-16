@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import APP_NAME, __version__, winutil
+from . import APP_NAME, __copyright__, __version__, winutil
 from .audio import list_input_devices
 from .config import (
     COMPUTE_CHOICES,
@@ -487,6 +487,20 @@ class SettingsDialog(QDialog):
             "    .venv\\Scripts\\python -m voxwin --diagnose\n"
             "Логи: %APPDATA%\\VoxWin\\logs\\voxwin.log"
         ))
+
+        # GPL-3.0 "Appropriate Legal Notices": программа с интерфейсом должна
+        # показывать копирайт, отсутствие гарантий и условия лицензии.
+        about = QLabel(
+            f"{APP_NAME} {__version__} — {__copyright__}\n"
+            "Свободная программа под GNU GPL v3.0: распространяется БЕЗ "
+            "КАКИХ-ЛИБО ГАРАНТИЙ.\n"
+            "Вы вправе распространять её на условиях GPL — "
+            '<a href="https://www.gnu.org/licenses/gpl-3.0.html">текст лицензии</a>. '
+            'Исходный код: <a href="https://github.com/matvey705/voxwin">github.com/matvey705/voxwin</a>'
+        )
+        about.setOpenExternalLinks(True)
+        about.setWordWrap(True)
+        form.addRow(about)
         return page
 
     # ------------------------------------------------------------------
