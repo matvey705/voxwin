@@ -1,0 +1,5 @@
+# Опционально: ускорение на NVIDIA GPU (CUDA 12).
+# Ставится ПОВЕРХ requirements.txt; драйвер NVIDIA должен быть установлен.
+# CTranslate2 подхватит эти DLL автоматически (VoxWin регистрирует их пути).
+nvidia-cublas-cu12
+nvidia-cudnn-cu12>=9.0

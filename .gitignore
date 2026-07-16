@@ -1,0 +1,28 @@
+# Виртуальное окружение (пересобирается из requirements.txt)
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# PyInstaller / Inno Setup
+packaging/Output/
+*.spec.bak
+
+# Скачанные модели Whisper (гигабайты, качаются сами при первом запуске)
+models/
+*.bin
+
+# Логи и локальный конфиг
+*.log
+config.json
+
+# IDE / ОС
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
