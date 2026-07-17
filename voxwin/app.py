@@ -28,6 +28,7 @@ from .injector import InjectionError, copy_to_clipboard, inject_text
 from .overlay import Overlay
 from .postprocess import PostProcessor
 from .refine import RefinementError, refine_text
+from .settings_ui import SettingsDialog
 from .transcriber import Transcriber, TranscriptionResult
 from .tray import TrayController
 
@@ -366,17 +367,26 @@ class VoxApp(QObject):
     # ------------------------------------------------------------------
 
     def open_settings(self) -> None:
+        log.info("Opening settings dialog")
         if self._settings_dialog is not None:
             self._settings_dialog.raise_()
             self._settings_dialog.activateWindow()
             return
-        from .settings_ui import SettingsDialog
-
-        dialog = SettingsDialog(
-            self.cfg,
-            pause_hotkeys=self.hotkeys.pause,
-            resume_hotkeys=lambda: self.hotkeys.apply(self.cfg),
-        )
+        try:
+            # Imported at module scope on purpose: a lazy import here would
+            # break at first click if the project folder is moved/renamed
+            # while the app is running (modules load from disk on demand).
+            dialog = SettingsDialog(
+                self.cfg,
+                pause_hotkeys=self.hotkeys.pause,
+                resume_hotkeys=lambda: self.hotkeys.apply(self.cfg),
+            )
+        except Exception as exc:
+            log.exception("Failed to build the settings dialog")
+            self.tray.notify(
+                APP_NAME, f"Не удалось открыть настройки: {exc}", error=True
+            )
+            return
         self._settings_dialog = dialog
         try:
             if dialog.exec():
