@@ -27,6 +27,16 @@ MIN_AUDIO_SECONDS = 0.25
 ResultCallback = Callable[[Optional["TranscriptionResult"], Optional[str]], None]
 
 
+def _is_repetition_hallucination(text: str) -> bool:
+    """True for the repetitive filler greedy decoding emits on partial audio
+    ('blah blah blah blah', 'you you you'). Real speech has varied words, so
+    a tiny vocabulary spread over many words is a reliable garbage signal."""
+    words = text.lower().split()
+    if len(words) < 4:
+        return False
+    return len(set(words)) <= max(1, int(len(words) * 0.34))
+
+
 @dataclass
 class TranscriptionResult:
     text: str
@@ -290,6 +300,7 @@ class Transcriber:
         model = self._ensure_model(cfg)
         started = time.monotonic()
 
+        audio_seconds = len(audio) / 16000.0
         language = cfg.effective_language() or self._preview_language
         segments, info = model.transcribe(
             audio,
@@ -298,6 +309,7 @@ class Transcriber:
             temperature=0.0,
             condition_on_previous_text=False,
             without_timestamps=True,
+            no_speech_threshold=0.6,
             initial_prompt=self._build_initial_prompt(cfg),
             vad_filter=cfg.vad_enabled,
             **(
@@ -311,10 +323,19 @@ class Transcriber:
             ),
         )
         text = " ".join(seg.text.strip() for seg in segments).strip()
-        if language is None and float(info.language_probability or 0.0) >= 0.5:
-            # Lock the detected language for the rest of this utterance so
-            # subsequent previews skip detection (faster, no flip-flopping).
+        # Lock the detected language only when we are BOTH confident and have
+        # enough audio: a 1-second first chunk of Russian must never pin the
+        # whole preview to a mis-detected English (that was the visible bug).
+        if (
+            language is None
+            and audio_seconds >= 1.5
+            and float(info.language_probability or 0.0) >= 0.85
+        ):
             self._preview_language = info.language
+        if _is_repetition_hallucination(text):
+            # Greedy decoding on a partial buffer loves "blah blah blah";
+            # drop it so the overlay keeps the last real words instead.
+            return "", time.monotonic() - started
         return text, time.monotonic() - started
 
     def _transcribe(self, cfg: Config, audio: np.ndarray) -> TranscriptionResult:

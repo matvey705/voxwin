@@ -10,6 +10,32 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from voxwin import winutil  # noqa: E402
 from voxwin.config import Config  # noqa: E402
+from voxwin.transcriber import _is_repetition_hallucination  # noqa: E402
+
+
+class TestRepetitionHallucination(unittest.TestCase):
+    def test_flags_repetitive_filler(self):
+        for text in (
+            "blah blah blah blah blah",
+            "you you you you",
+            "так так так так так",
+            "the the the the the the",
+        ):
+            self.assertTrue(_is_repetition_hallucination(text), text)
+
+    def test_keeps_real_speech(self):
+        for text in (
+            "то есть объясни про обсидиан",
+            "привет как дела",
+            "buy milk and eggs today",
+            "раз два три четыре",
+        ):
+            self.assertFalse(_is_repetition_hallucination(text), text)
+
+    def test_short_repeats_pass(self):
+        # 2-3 words are too short to judge; leave them alone.
+        self.assertFalse(_is_repetition_hallucination("да да да"))
+        self.assertFalse(_is_repetition_hallucination(""))
 
 
 class TestChimes(unittest.TestCase):

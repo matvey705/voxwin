@@ -247,7 +247,7 @@ class VoxApp(QObject):
         if now - self._last_preview_t < self._preview_interval:
             return
         audio = self.recorder.snapshot()
-        if len(audio) < 16000:  # let at least a second accumulate
+        if len(audio) < 16000 * 1.5:  # ~1.5 s so language detection is stable
             return
         if len(audio) > PREVIEW_WINDOW_SECONDS * 16000:
             audio = audio[-PREVIEW_WINDOW_SECONDS * 16000:]
