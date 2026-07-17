@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
@@ -36,7 +37,7 @@ from .config import (
     LANGUAGES,
     MODEL_CHOICES,
 )
-from .hotkeys import read_hotkey_blocking
+from .hotkeys import read_hotkey_blocking, validate_hotkey
 
 
 class HotkeyCaptureButton(QPushButton):
@@ -250,9 +251,20 @@ class SettingsDialog(QDialog):
 
         self.ptt_edit = QLineEdit(cfg.ptt_hotkey)
         form.addRow("Удерживать (PTT):", self._hotkey_row(self.ptt_edit))
+        self.ptt_status = QLabel()
+        self.ptt_status.setWordWrap(True)
+        form.addRow("", self.ptt_status)
 
         self.toggle_edit = QLineEdit(cfg.toggle_hotkey)
         form.addRow("Старт/стоп:", self._hotkey_row(self.toggle_edit))
+        self.toggle_status = QLabel()
+        self.toggle_status.setWordWrap(True)
+        form.addRow("", self.toggle_status)
+
+        # Живая проверка конфликтов с сочетаниями Windows/приложений.
+        self.ptt_edit.textChanged.connect(self._refresh_hotkey_status)
+        self.toggle_edit.textChanged.connect(self._refresh_hotkey_status)
+        self._refresh_hotkey_status()
 
         self.suppress_check = QCheckBox(
             "Не передавать горячую клавишу в активное приложение"
@@ -262,12 +274,45 @@ class SettingsDialog(QDialog):
 
         form.addRow(
             "", QLabel(
-                "Примеры: f9, ctrl+alt+space, win+shift+d.\n"
+                "Примеры: f9, ctrl+alt+space, ctrl+shift+f9.\n"
                 "Оба режима активны одновременно: PTT — удерживайте и говорите,\n"
-                "старт/стоп — нажали, надиктовали, нажали ещё раз."
+                "старт/стоп — нажали, надиктовали, нажали ещё раз.\n"
+                "Комбинация перехватывается только целиком: PTT-клавиша без\n"
+                "своих модификаторов работает в программах как обычно."
             )
         )
         return page
+
+    def _refresh_hotkey_status(self) -> None:
+        colors = {"ok": "#2e8b57", "warn": "#b8860b", "block": "#d9363e"}
+        marks = {"ok": "✓", "warn": "⚠", "block": "✕"}
+        for edit, label in (
+            (self.ptt_edit, self.ptt_status),
+            (self.toggle_edit, self.toggle_status),
+        ):
+            level, message = validate_hotkey(edit.text())
+            label.setText(f"{marks[level]} {message}")
+            label.setStyleSheet(f"color: {colors[level]};")
+
+    def accept(self) -> None:  # noqa: N802 (Qt naming)
+        """Не даём сохранить сочетания, ломающие Windows или ввод текста."""
+        problems = []
+        ptt = self.ptt_edit.text().strip().lower()
+        toggle = self.toggle_edit.text().strip().lower()
+        for name, combo in (("Удерживать (PTT)", ptt), ("Старт/стоп", toggle)):
+            level, message = validate_hotkey(combo)
+            if level == "block":
+                problems.append(f"«{name}»: {message}")
+        if ptt and ptt == toggle:
+            problems.append("PTT и «Старт/стоп» не могут быть одним сочетанием.")
+        if problems:
+            QMessageBox.warning(
+                self,
+                "Горячие клавиши",
+                "Исправьте горячие клавиши:\n\n" + "\n\n".join(problems),
+            )
+            return
+        super().accept()
 
     def _build_audio_tab(self, cfg: Config) -> QWidget:
         page = QWidget()

@@ -44,6 +44,101 @@ def _normalize_part(part: str) -> str:
     return _MOD_ALIASES.get(part, part)
 
 
+# --- Conflict validation against Windows / application shortcuts -------------
+#
+# Levels:
+#   "block" — сочетание нельзя сохранить: либо его physically нельзя
+#             перехватить (Ctrl+Alt+Del), либо оно сломает базовый ввод
+#             (одиночная буква, Shift+буква) или критичные функции ОС;
+#   "warn"  — сохранить можно, но сочетание почти наверняка занято
+#             (Ctrl+C, Win+..., Alt+буква) — пользователь предупреждён;
+#   "ok"    — свободно.
+
+_MODIFIERS = {"ctrl", "alt", "shift", "windows"}
+
+_SAFE_BARE_KEYS = {f"f{i}" for i in range(2, 25)} | {"scroll lock", "pause"}
+
+_TYPING_KEYS = {
+    "space", "enter", "return", "tab", "backspace", "delete", "del",
+    "esc", "escape", "up", "down", "left", "right",
+    "home", "end", "page up", "page down", "insert",
+}
+
+_SYSTEM_BLOCKED = {
+    (frozenset({"alt"}), "tab"),
+    (frozenset({"alt", "shift"}), "tab"),
+    (frozenset({"alt"}), "f4"),
+    (frozenset({"alt"}), "esc"),
+    (frozenset({"alt"}), "space"),
+    (frozenset({"ctrl"}), "esc"),
+    (frozenset({"ctrl", "shift"}), "esc"),
+    (frozenset({"ctrl", "alt"}), "delete"),
+    (frozenset({"ctrl", "alt"}), "del"),
+    (frozenset({"windows"}), "l"),
+}
+
+
+def validate_hotkey(combo: str) -> tuple:
+    """Классифицирует сочетание: ('ok'|'warn'|'block', пояснение).
+
+    Ловит конфликты с базовыми сочетаниями Windows и обычным набором
+    текста ДО того, как пользователь сохранит настройку.
+    """
+    combo = (combo or "").strip().lower()
+    if not combo:
+        return "ok", "Отключено."
+
+    parts = [_normalize_part(p) for p in combo.split("+") if p.strip()]
+    if not parts:
+        return "block", "Пустое сочетание."
+    *mod_parts, key = parts
+    mods = frozenset(mod_parts)
+
+    if not mods.issubset(_MODIFIERS):
+        return "block", "Модификаторами могут быть только Ctrl, Alt, Shift и Win."
+    if key in _MODIFIERS:
+        return "block", "Нужна основная клавиша (например, Ctrl+Alt+Пробел)."
+    if (mods, key) in _SYSTEM_BLOCKED:
+        return "block", "Системное сочетание Windows — перехватывать его нельзя."
+
+    if not mods:
+        if key in _SAFE_BARE_KEYS:
+            return "ok", "Отличный выбор: клавиша почти нигде не занята."
+        if key == "f1":
+            return "warn", "F1 — «Справка» во многих программах."
+        return (
+            "block",
+            "Одиночная клавиша сломает обычный набор текста — добавьте "
+            "модификатор или возьмите F-клавишу (F2–F12).",
+        )
+
+    if mods == frozenset({"shift"}) and (len(key) == 1 or key in _TYPING_KEYS):
+        return "block", "Shift+символ — это ввод заглавных букв."
+    if "windows" in mods:
+        return (
+            "warn",
+            "Windows резервирует многие Win-сочетания — вместо диктовки может "
+            "сработать системное действие.",
+        )
+    if mods == frozenset({"ctrl"}) and len(key) == 1:
+        return (
+            "warn",
+            "Ctrl+буква/цифра занято почти во всех программах "
+            "(копирование, вставка, сохранение…).",
+        )
+    if mods == frozenset({"ctrl", "shift"}) and len(key) == 1:
+        return "warn", "Ctrl+Shift+буква часто занято в приложениях."
+    if mods == frozenset({"alt"}) and len(key) == 1:
+        return "warn", "Alt+буква открывает пункты меню программ."
+    if mods == frozenset({"ctrl", "alt"}) and len(key) == 1:
+        return (
+            "warn",
+            "Ctrl+Alt+символ = AltGr на некоторых раскладках — может "
+            "вводить спецсимволы.",
+        )
+    return "ok", "Сочетание выглядит свободным."
+
+
 class HotkeyManager:
     def __init__(
         self,
