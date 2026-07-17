@@ -161,27 +161,78 @@ def add_cuda_dll_dirs() -> None:
 
 
 # --- Sounds -------------------------------------------------------------------
+#
+# winsound.Beep is a harsh full-volume square wave. Instead we synthesize
+# soft sine chimes (gentle attack, exponential decay, quiet 2nd harmonic)
+# and play them from memory. Volume is user-configurable.
+
+_SAMPLE_RATE = 44100
+
+# kind -> [(frequency_hz, duration_s, gap_after_s), ...]
+_CHIME_NOTES = {
+    "start": [(523.25, 0.09, 0.012), (783.99, 0.16, 0.0)],   # C5 -> G5, rising
+    "stop": [(783.99, 0.07, 0.012), (523.25, 0.14, 0.0)],    # G5 -> C5, falling
+    "done": [(1046.50, 0.16, 0.0)],                           # soft C6 ding
+    "error": [(196.00, 0.11, 0.05), (174.61, 0.15, 0.0)],    # low double knock
+}
+
+_chime_cache: dict = {}
 
 
-def play_sound(kind: str) -> None:
+def _synth_chime(kind: str, volume: int) -> bytes | None:
+    """Build an in-memory WAV for the given cue at the given volume (5..100)."""
+    notes = _CHIME_NOTES.get(kind)
+    if not notes:
+        return None
+    key = (kind, int(volume))
+    cached = _chime_cache.get(key)
+    if cached is not None:
+        return cached
+
+    import io
+    import wave
+
+    import numpy as np
+
+    amplitude = 0.45 * max(5, min(100, int(volume))) / 100.0
+    parts = []
+    for freq, duration, gap in notes:
+        n = int(_SAMPLE_RATE * duration)
+        t = np.arange(n, dtype=np.float64) / _SAMPLE_RATE
+        tone = np.sin(2 * np.pi * freq * t) + 0.2 * np.sin(2 * np.pi * freq * 2 * t)
+        attack = np.minimum(1.0, t / 0.006)          # 6 ms fade-in, no click
+        decay = np.exp(-t * (5.0 / duration))        # smooth ring-out
+        parts.append(tone * attack * decay)
+        if gap:
+            parts.append(np.zeros(int(_SAMPLE_RATE * gap)))
+    signal = np.concatenate(parts) * amplitude
+    pcm = (np.clip(signal, -1.0, 1.0) * 32767).astype("<i2").tobytes()
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(_SAMPLE_RATE)
+        wav.writeframes(pcm)
+    data = buf.getvalue()
+    _chime_cache[key] = data  # must outlive async playback (SND_MEMORY)
+    return data
+
+
+def play_sound(kind: str, volume: int = 35) -> None:
     """Short non-blocking audio cues: record start/stop, completion, error."""
+    try:
+        import winsound
 
-    def _beep() -> None:
-        try:
-            import winsound
-
-            if kind == "start":
-                winsound.Beep(880, 90)
-            elif kind == "stop":
-                winsound.Beep(620, 90)
-            elif kind == "done":
-                winsound.Beep(988, 60)
-            elif kind == "error":
-                winsound.MessageBeep(winsound.MB_ICONHAND)
-        except Exception:
-            pass
-
-    threading.Thread(target=_beep, daemon=True).start()
+        data = _synth_chime(kind, volume)
+        if data is None:
+            return
+        winsound.PlaySound(
+            data,
+            winsound.SND_MEMORY | winsound.SND_ASYNC | winsound.SND_NODEFAULT,
+        )
+    except Exception:
+        pass
 
 
 # --- Logging ------------------------------------------------------------------

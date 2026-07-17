@@ -470,9 +470,31 @@ class SettingsDialog(QDialog):
         self.sound_check.setChecked(cfg.sound_feedback)
         form.addRow(self.sound_check)
 
+        volume_row = QWidget()
+        volume_layout = QHBoxLayout(volume_row)
+        volume_layout.setContentsMargins(0, 0, 0, 0)
+        self.volume_spin = QSpinBox()
+        self.volume_spin.setRange(5, 100)
+        self.volume_spin.setSuffix(" %")
+        self.volume_spin.setValue(cfg.sound_volume)
+        volume_layout.addWidget(self.volume_spin)
+        try_button = QPushButton("Прослушать")
+        try_button.clicked.connect(
+            lambda: winutil.play_sound("start", self.volume_spin.value())
+        )
+        volume_layout.addWidget(try_button)
+        volume_layout.addStretch(1)
+        form.addRow("Громкость сигналов:", volume_row)
+
         self.overlay_check = QCheckBox("Плавающий индикатор записи (оверлей)")
         self.overlay_check.setChecked(cfg.overlay_enabled)
         form.addRow(self.overlay_check)
+
+        self.live_preview_check = QCheckBox(
+            "Показывать текст по мере речи (в оверлее, нужен включённый оверлей)"
+        )
+        self.live_preview_check.setChecked(cfg.live_preview)
+        form.addRow(self.live_preview_check)
 
         self.notify_check = QCheckBox("Уведомление после каждой успешной вставки")
         self.notify_check.setChecked(cfg.notify_on_success)
@@ -560,7 +582,9 @@ class SettingsDialog(QDialog):
         cfg.ollama_prompt = self.ollama_prompt_edit.toPlainText().strip()
 
         cfg.sound_feedback = self.sound_check.isChecked()
+        cfg.sound_volume = self.volume_spin.value()
         cfg.overlay_enabled = self.overlay_check.isChecked()
+        cfg.live_preview = self.live_preview_check.isChecked()
         cfg.notify_on_success = self.notify_check.isChecked()
         cfg.preload_model = self.preload_check.isChecked()
 

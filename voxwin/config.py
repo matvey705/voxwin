@@ -107,8 +107,10 @@ class Config:
 
     # --- UX -----------------------------------------------------------------
     sound_feedback: bool = True
+    sound_volume: int = 35             # 5..100, % of full scale for chimes
     notify_on_success: bool = False    # errors are always notified
     overlay_enabled: bool = True
+    live_preview: bool = True          # show partial transcript while recording
     history_size: int = 20
 
     # ------------------------------------------------------------------------
@@ -211,6 +213,7 @@ class Config:
         self.clipboard_restore_delay_ms = as_int("clipboard_restore_delay_ms", 50, 5000)
         self.type_char_delay_ms = as_int("type_char_delay_ms", 0, 100)
         self.history_size = as_int("history_size", 1, 100)
+        self.sound_volume = as_int("sound_volume", 5, 100)
         self.ollama_timeout_s = as_int("ollama_timeout_s", 1, 300)
 
         # Element types matter too: a stray int inside custom_fillers would

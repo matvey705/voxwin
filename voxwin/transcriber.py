@@ -59,6 +59,11 @@ class Transcriber:
         self._model_key: Optional[tuple] = None
         self._forced_cpu = False
         self.busy = False
+        # Live-preview machinery: generation counter invalidates stale
+        # preview jobs; detected language is cached per-utterance so every
+        # preview pass doesn't redo language detection.
+        self._preview_gen = 0
+        self._preview_language: Optional[str] = None
 
     # -- public API (any thread) ------------------------------------------------
 
@@ -75,6 +80,19 @@ class Transcriber:
 
     def submit(self, audio: np.ndarray, callback: ResultCallback) -> None:
         self._queue.put(("job", audio, callback))
+
+    def submit_preview(self, audio: np.ndarray, generation: int, callback) -> None:
+        """Fast partial transcription for the live overlay preview.
+
+        callback(generation, text_or_None, elapsed_seconds) fires in the
+        worker thread. Stale generations are silently dropped.
+        """
+        self._queue.put(("preview", (audio, generation), callback))
+
+    def cancel_previews(self, generation: int) -> None:
+        """Invalidate queued/in-flight previews older than `generation`."""
+        self._preview_gen = generation
+        self._preview_language = None
 
     def apply_config(self, cfg: Config) -> None:
         with self._cfg_lock:
@@ -103,8 +121,25 @@ class Transcriber:
                 except Exception:
                     log.exception("Model preload failed")
                 continue
+            if kind == "preview":
+                preview_audio, generation = audio
+                if generation != self._preview_gen:
+                    continue  # user already stopped/cancelled this utterance
+                self.busy = True
+                try:
+                    text, elapsed = self._transcribe_preview(cfg, preview_audio)
+                    callback(generation, text, elapsed)
+                except Exception:
+                    # Preview is best-effort eye candy: never surface errors,
+                    # never break the dictation pipeline.
+                    log.debug("Preview transcription failed", exc_info=True)
+                    callback(generation, None, 0.0)
+                finally:
+                    self.busy = False
+                continue
             # kind == "job"
             self.busy = True
+            self._preview_language = None  # utterance is over
             try:
                 result = self._transcribe(cfg, audio)
                 callback(result, None)
@@ -246,6 +281,41 @@ class Transcriber:
         if terms:
             parts.append(", ".join(terms) + ".")
         return " ".join(parts) if parts else None
+
+    def _transcribe_preview(self, cfg: Config, audio: np.ndarray) -> tuple:
+        """Cheapest possible pass over the partial buffer: greedy decoding,
+        no timestamps, no temperature fallbacks. Returns (text, elapsed_s)."""
+        if len(audio) < 16000 * 0.6:
+            return "", 0.0
+        model = self._ensure_model(cfg)
+        started = time.monotonic()
+
+        language = cfg.effective_language() or self._preview_language
+        segments, info = model.transcribe(
+            audio,
+            language=language,
+            beam_size=1,
+            temperature=0.0,
+            condition_on_previous_text=False,
+            without_timestamps=True,
+            initial_prompt=self._build_initial_prompt(cfg),
+            vad_filter=cfg.vad_enabled,
+            **(
+                {"vad_parameters": dict(
+                    threshold=cfg.vad_threshold,
+                    min_silence_duration_ms=cfg.vad_min_silence_ms,
+                    speech_pad_ms=cfg.vad_speech_pad_ms,
+                )}
+                if cfg.vad_enabled
+                else {}
+            ),
+        )
+        text = " ".join(seg.text.strip() for seg in segments).strip()
+        if language is None and float(info.language_probability or 0.0) >= 0.5:
+            # Lock the detected language for the rest of this utterance so
+            # subsequent previews skip detection (faster, no flip-flopping).
+            self._preview_language = info.language
+        return text, time.monotonic() - started
 
     def _transcribe(self, cfg: Config, audio: np.ndarray) -> TranscriptionResult:
         audio_seconds = len(audio) / 16000.0

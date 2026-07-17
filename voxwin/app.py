@@ -12,6 +12,7 @@ Threading model:
 from __future__ import annotations
 
 import logging
+import time
 from collections import deque
 from itertools import islice
 from typing import Optional
@@ -33,6 +34,10 @@ from .tray import TrayController
 log = logging.getLogger(__name__)
 
 MIN_UTTERANCE_SECONDS = 0.3
+# Live preview re-transcribes only the freshest audio so long dictations
+# don't make each pass progressively slower (the overlay shows the tail
+# of the phrase anyway).
+PREVIEW_WINDOW_SECONDS = 25
 
 
 class VoxApp(QObject):
@@ -44,6 +49,7 @@ class VoxApp(QObject):
     sigDone = Signal(str, object)      # final text, TranscriptionResult
     sigJobError = Signal(str)
     sigWarn = Signal(str)
+    sigPreview = Signal(int, str, float)  # generation, partial text, elapsed s
 
     def __init__(self, qt_app: QApplication, open_settings: bool = False):
         super().__init__()
@@ -61,6 +67,12 @@ class VoxApp(QObject):
         self._recording_source: Optional[str] = None
         self._processing_jobs = 0
         self._settings_dialog = None
+        # Live-preview pacing: generation invalidates stale results, the
+        # interval adapts to how fast this machine actually transcribes
+        # (GPU: ~0.7 s refresh; slow CPU: it backs off by itself).
+        self._preview_gen = 0
+        self._last_preview_t = 0.0
+        self._preview_interval = 0.8
 
         # --- timers -------------------------------------------------------
         self._level_timer = QTimer(self)
@@ -78,6 +90,7 @@ class VoxApp(QObject):
         self.sigDone.connect(self._on_done)
         self.sigJobError.connect(self._on_job_error)
         self.sigWarn.connect(lambda msg: self.tray.notify(APP_NAME, msg))
+        self.sigPreview.connect(self._on_preview)
 
         self.tray.toggleRequested.connect(self._on_toggle)
         self.tray.cancelRequested.connect(self._cancel_recording)
@@ -128,12 +141,13 @@ class VoxApp(QObject):
         except AudioError as exc:
             log.error("Recorder start failed: %s", exc)
             if self.cfg.sound_feedback:
-                winutil.play_sound("error")
+                winutil.play_sound("error", self.cfg.sound_volume)
             self.tray.notify(APP_NAME, str(exc), error=True)
             return
         self._recording_source = source
+        self._last_preview_t = time.monotonic()  # first preview ~1 s in
         if self.cfg.sound_feedback:
-            winutil.play_sound("start")
+            winutil.play_sound("start", self.cfg.sound_volume)
         if self.cfg.overlay_enabled:
             self.overlay.show_state("recording")
         self._level_timer.start()
@@ -144,11 +158,13 @@ class VoxApp(QObject):
         if not self._recording_source:
             return
         self._recording_source = None
+        self._preview_gen += 1
+        self.transcriber.cancel_previews(self._preview_gen)
         self._level_timer.stop()
         self._max_timer.stop()
         audio = self.recorder.stop()
         if self.cfg.sound_feedback:
-            winutil.play_sound("stop")
+            winutil.play_sound("stop", self.cfg.sound_volume)
 
         if len(audio) < MIN_UTTERANCE_SECONDS * 16000:
             if self._processing_jobs > 0 and self.cfg.overlay_enabled:
@@ -168,6 +184,8 @@ class VoxApp(QObject):
         if not self._recording_source:
             return
         self._recording_source = None
+        self._preview_gen += 1
+        self.transcriber.cancel_previews(self._preview_gen)
         self._level_timer.stop()
         self._max_timer.stop()
         self.recorder.cancel()
@@ -211,10 +229,45 @@ class VoxApp(QObject):
             log.warning("Audio stream died mid-recording (device unplugged?)")
             self._cancel_recording()
             if self.cfg.sound_feedback:
-                winutil.play_sound("error")
+                winutil.play_sound("error", self.cfg.sound_volume)
             self.tray.notify(
                 APP_NAME, "Микрофон отключился — запись остановлена.", error=True
             )
+            return
+        self._maybe_submit_preview()
+
+    def _maybe_submit_preview(self) -> None:
+        """Feed the live transcript in the overlay while the user speaks."""
+        if not (self.cfg.live_preview and self.cfg.overlay_enabled):
+            return
+        if self.transcriber.busy:
+            return  # previous pass still running — adaptive back-off
+        now = time.monotonic()
+        if now - self._last_preview_t < self._preview_interval:
+            return
+        audio = self.recorder.snapshot()
+        if len(audio) < 16000:  # let at least a second accumulate
+            return
+        if len(audio) > PREVIEW_WINDOW_SECONDS * 16000:
+            audio = audio[-PREVIEW_WINDOW_SECONDS * 16000:]
+        self._last_preview_t = now
+        self.transcriber.submit_preview(
+            audio, self._preview_gen, self._on_preview_result
+        )
+
+    def _on_preview_result(self, generation: int, text, elapsed: float) -> None:
+        """Runs in the transcriber worker thread."""
+        self.sigPreview.emit(generation, text or "", float(elapsed))
+
+    def _on_preview(self, generation: int, text: str, elapsed: float) -> None:
+        if generation != self._preview_gen or not self._recording_source:
+            return  # utterance already finished — the final result is coming
+        if text:
+            self.overlay.set_preview(text)
+        # Pace the next pass to ~2x the cost of the last one: smooth on GPU
+        # (~0.7 s), self-throttling on CPU instead of piling up jobs.
+        if elapsed > 0:
+            self._preview_interval = min(5.0, max(0.7, elapsed * 2.0))
 
     # ------------------------------------------------------------------
     # Transcription pipeline (worker thread!) → signals back to Qt thread
@@ -280,7 +333,7 @@ class VoxApp(QObject):
             self.tray.set_history(list(self._history))
             self._overlay_after_job("done")
             if self.cfg.sound_feedback:
-                winutil.play_sound("done")
+                winutil.play_sound("done", self.cfg.sound_volume)
             if self.cfg.notify_on_success:
                 preview = text if len(text) <= 100 else text[:97] + "…"
                 self.tray.notify(
@@ -297,7 +350,7 @@ class VoxApp(QObject):
         self._processing_jobs = max(0, self._processing_jobs - 1)
         self._overlay_after_job("error")
         if self.cfg.sound_feedback:
-            winutil.play_sound("error")
+            winutil.play_sound("error", self.cfg.sound_volume)
         self.tray.notify(APP_NAME, message, error=True)
         self._update_ui_state()
 

@@ -207,6 +207,17 @@ class Recorder:
             rates.append(48000.0)
         return rates
 
+    def snapshot(self) -> np.ndarray:
+        """Copy of everything recorded so far (float32 mono 16 kHz) WITHOUT
+        stopping the stream — feeds the live transcript preview."""
+        with self._lock:
+            if not self._chunks:
+                return np.zeros(0, dtype=np.float32)
+            audio = np.concatenate(self._chunks)
+        if self._rate != TARGET_RATE:
+            audio = _resample(audio, self._rate, TARGET_RATE)
+        return audio
+
     def stop(self) -> np.ndarray:
         """Stop recording and return audio as float32 mono at 16 kHz."""
         global _active_streams
